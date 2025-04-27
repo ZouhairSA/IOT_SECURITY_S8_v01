@@ -9,11 +9,11 @@ import time
 # Chemins des modèles
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 yawn_model_path = os.path.join(BASE_DIR, "runs", "detectyawn", "train", "weights", "best.pt")
-eye_model_path = os.path.join(BASE_DIR, "runs", "detecteye", "train", "weights", "best.pt")
+# eye_model_path = os.path.join(BASE_DIR, "runs", "detecteye", "train", "weights", "best.pt")
 
 # Chargement des modèles
 detectyawn = YOLO(yawn_model_path)
-detecteye = YOLO(eye_model_path)
+# detecteye = YOLO(eye_model_path)
 face_mesh = mp.solutions.face_mesh.FaceMesh(
     min_detection_confidence=0.5,
     min_tracking_confidence=0.5,
@@ -21,25 +21,30 @@ face_mesh = mp.solutions.face_mesh.FaceMesh(
     refine_landmarks=True
 )
 
-# Variables d'état (remises à zéro à chaque frame)
+# Seuils pour la détection
+HEAD_POSE_LIMIT = 20  # degrés
+YAWN_DURATION_LIMIT = 7.0  # secondes
+MICROSLEEP_LIMIT = 4.0  # secondes
+
+# Variables d'état globales (pour la session Gradio)
+yawn_in_progress = False
+yawn_duration = 0
+left_eye_still_closed = False
+right_eye_still_closed = False
+microsleeps = 0
+last_head_pose_time = time.time()
+head_pose_alert = False
+
 def detect_drowsiness(image):
-    # Statistiques
-    blinks = 0
-    microsleeps = 0
-    yawns = 0
-    yawn_duration = 0
-    left_eye_state = ""
-    right_eye_state = ""
-    yawn_state = ""
-    alert_text = ""
-    pitch, yaw, roll = 0, 0, 0
+    global yawn_in_progress, yawn_duration, left_eye_still_closed, right_eye_still_closed, microsleeps, last_head_pose_time, head_pose_alert
 
     if image is None:
-        return None, "Aucune image", blinks, microsleeps, yawns, yawn_duration, pitch, yaw, roll
+        return None, "Aucune image"
 
     frame = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
     image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     results = face_mesh.process(image_rgb)
+    alert_text = ""
 
     if results.multi_face_landmarks:
         for face_landmarks in results.multi_face_landmarks:
@@ -98,81 +103,29 @@ def detect_drowsiness(image):
                 cv2.putText(frame, f"Pitch: {pitch:.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,0), 2)
                 cv2.putText(frame, f"Yaw: {yaw:.1f}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,0), 2)
                 cv2.putText(frame, f"Roll: {roll:.1f}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,0), 2)
-                if abs(pitch) > 20 or abs(yaw) > 20:
-                    alert_text += "⚠️ Tête penchée détectée !\n"
-
-            # --- Détection yeux (YOLO) ---
-            # Extraction des ROI yeux
-            def extract_roi(points):
-                x1, y1 = int(face_landmarks.landmark[points[0]].x * iw), int(face_landmarks.landmark[points[0]].y * ih)
-                x2, y2 = int(face_landmarks.landmark[points[1]].x * iw), int(face_landmarks.landmark[points[1]].y * ih)
-                y_top = int(face_landmarks.landmark[points[2]].y * ih)
-                y_bot = int(face_landmarks.landmark[points[3]].y * ih)
-                return frame[min(y_top, y1, y2):max(y_bot, y1, y2), min(x1, x2):max(x1, x2)]
-            left_eye_roi = extract_roi(left_eye_points)
-            right_eye_roi = extract_roi(right_eye_points)
-            # Prédiction yeux
-            def predict_eye(eye_roi):
-                results_eye = detecteye.predict(eye_roi)
-                boxes = results_eye[0].boxes
-                if len(boxes) == 0:
-                    return "Unknown"
-                confidences = boxes.conf.cpu().numpy()
-                class_ids = boxes.cls.cpu().numpy()
-                max_confidence_index = np.argmax(confidences)
-                class_id = int(class_ids[max_confidence_index])
-                if class_id == 1:
-                    return "Close Eye"
-                elif class_id == 0 and confidences[max_confidence_index] > 0.30:
-                    return "Open Eye"
-                return "Unknown"
-            left_eye_state = predict_eye(left_eye_roi)
-            right_eye_state = predict_eye(right_eye_roi)
-            if left_eye_state == "Close Eye" and right_eye_state == "Close Eye":
-                alert_text += "⚠️ Yeux fermés détectés !\n"
-
-            # --- Détection bâillement (YOLO) ---
-            mouth_roi = extract_roi(mouth_points)
-            results_yawn = detectyawn.predict(mouth_roi)
-            boxes = results_yawn[0].boxes
-            if len(boxes) > 0:
-                confidences = boxes.conf.cpu().numpy()
-                class_ids = boxes.cls.cpu().numpy()
-                max_confidence_index = np.argmax(confidences)
-                class_id = int(class_ids[max_confidence_index])
-                if class_id == 0:
-                    yawn_state = "Yawn"
-                    alert_text += "😮 Bâillement détecté !\n"
-                elif class_id == 1 and confidences[max_confidence_index] > 0.50:
-                    yawn_state = "No Yawn"
+                # Détection d'une position anormale
+                if abs(pitch) > HEAD_POSE_LIMIT or abs(yaw) > HEAD_POSE_LIMIT:
+                    if not head_pose_alert:
+                        last_head_pose_time = time.time()
+                        head_pose_alert = True
+                    elif time.time() - last_head_pose_time > 2.0:
+                        cv2.putText(frame, "ALERTE: TETE PENCHEE!", (200, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0,0,255), 3)
+                        alert_text += "⚠️ Tête penchée détectée !\n"
                 else:
-                    yawn_state = "Unknown"
+                    head_pose_alert = False
 
-    # Statistiques fictives pour la démo (à adapter si tu veux du vrai suivi)
-    blinks = np.random.randint(0, 10)
-    microsleeps = np.random.uniform(0, 5)
-    yawns = np.random.randint(0, 5)
-    yawn_duration = np.random.uniform(0, 10)
+            # --- Détection bouche/yeux (exemple simple, à enrichir avec YOLO si besoin) ---
+            # Tu peux ajouter ici la logique de détection avancée (bâillement, yeux fermés, etc.)
 
-    return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), alert_text if alert_text else "Aucune alerte", blinks, microsleeps, yawns, yawn_duration, pitch, yaw, roll
+    return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), alert_text if alert_text else "Aucune alerte"
 
 demo = gr.Interface(
     fn=detect_drowsiness,
     inputs=gr.Image(sources=["webcam"], streaming=True, label="Webcam"),
-    outputs=[
-        gr.Image(label="Résultat"),
-        gr.Textbox(label="Alertes"),
-        gr.Number(label="Blinks"),
-        gr.Number(label="Microsleeps (s)"),
-        gr.Number(label="Yawns"),
-        gr.Number(label="Yawn Duration (s)"),
-        gr.Number(label="Pitch"),
-        gr.Number(label="Yaw"),
-        gr.Number(label="Roll"),
-    ],
+    outputs=[gr.Image(label="Résultat"), gr.Textbox(label="Alerte")],
     live=True,
     title="Détection de Somnolence (Webcam Live)",
-    description="Testez la détection de somnolence en direct avec votre webcam. Statistiques et alertes en temps réel."
+    description="Testez la détection de somnolence en direct avec votre webcam."
 )
 
 if __name__ == "__main__":

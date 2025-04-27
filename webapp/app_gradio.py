@@ -15,25 +15,34 @@ face_mesh = mp.solutions.face_mesh.FaceMesh(
 )
 
 def detect_drowsiness(image):
+    if image is None:
+        return None
+    # Gradio fournit l'image en RGB uint8
     frame = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
     image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     results = face_mesh.process(image_rgb)
     if results.multi_face_landmarks:
         for face_landmarks in results.multi_face_landmarks:
             ih, iw, _ = frame.shape
-            # (ajoute ici ta logique de détection, points, angles, etc.)
-            # Exemple : dessiner un point sur le nez
-            lm = face_landmarks.landmark[1]
-            x, y = int(lm.x * iw), int(lm.y * ih)
-            cv2.circle(frame, (x, y), 5, (0, 255, 0), -1)
+            # Points pour la bouche et les yeux
+            mouth_points = [61, 291, 0, 17]
+            right_eye_points = [33, 133, 159, 145]
+            left_eye_points = [362, 263, 386, 374]
+            # Dessiner les points
+            for pt in mouth_points + right_eye_points + left_eye_points:
+                lm = face_landmarks.landmark[pt]
+                x, y = int(lm.x * iw), int(lm.y * ih)
+                cv2.circle(frame, (x, y), 2, (0, 255, 0), -1)
+            # (Tu peux ajouter ici la logique de détection yeux/bouche/orientation tête)
     return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
 demo = gr.Interface(
     fn=detect_drowsiness,
-    inputs=gr.Image(source="webcam", streaming=True),
-    outputs="image",
+    inputs=gr.Image(sources=["webcam"], streaming=True, label="Webcam"),
+    outputs=gr.Image(label="Résultat"),
     live=True,
-    title="Détection de Somnolence (Webcam)"
+    title="Détection de Somnolence (Webcam Live)",
+    description="Testez la détection de somnolence en direct avec votre webcam."
 )
 
 if __name__ == "__main__":
