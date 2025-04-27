@@ -124,7 +124,7 @@ demo = gr.Interface(
     inputs=gr.Image(sources=["webcam"], streaming=True, label="Webcam"),
     outputs=[gr.Image(label="Résultat"), gr.Textbox(label="Alerte")],
     live=True,
-    title="Détection de Somnolence (Webcam Live)",
+    title="Détection de Somnolence (WebCam Live)",
     description="Testez la détection de somnolence en direct avec votre webcam."
 )
 
