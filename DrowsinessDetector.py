@@ -133,6 +133,12 @@ class DrowsinessDetector(QMainWindow):
         self.connect_btn.clicked.connect(self.connect_arduino)
         self.controls_layout.addWidget(self.connect_btn)
         
+        # Quit button
+        self.quit_btn = QPushButton("Quit")
+        self.quit_btn.setStyleSheet("background-color: #e11d48; color: white; font-weight: bold;")
+        self.quit_btn.clicked.connect(self.close)
+        self.controls_layout.addWidget(self.quit_btn)
+        
         self.left_layout.addWidget(self.controls_widget)
 
         # Video display
@@ -216,6 +222,13 @@ class DrowsinessDetector(QMainWindow):
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.update_ui)
         self.update_timer.start(100)  # Update every 100ms
+
+        # Pour la détection orientation tête
+        self.head_pose_alert = False
+        self.head_pose_timer = 0
+        self.head_pose_threshold = 2.0  # secondes
+        self.last_head_pose_time = time.time()
+        self.head_pose_limit = 20  # degrés (à ajuster)
 
     def update_ui(self):
         """Update UI elements"""
@@ -314,6 +327,7 @@ class DrowsinessDetector(QMainWindow):
         # ---
         self.process_eye_detection(left_eye_roi, right_eye_roi)
         self.process_yawn_detection(mouth_roi)
+        self.detect_head_pose(frame, face_landmarks)
         self.update_alerts()
 
     def process_eye_detection(self, left_eye_roi, right_eye_roi):
@@ -393,20 +407,10 @@ class DrowsinessDetector(QMainWindow):
         """Connecte automatiquement à l'Arduino dès que possible"""
         if self.arduino and self.arduino.is_open:
             self.arduino.close()
-            self.connect_btn.setText("🔌 Connect Arduino")
-            return
-
-        port = self.port_combo.currentText()
-        if not port:
-            QMessageBox.warning(self, "Error", "No port selected!")
-            return
-
-        try:
-            self.arduino = serial.Serial(port, 9600, timeout=1)
             self.connect_btn.setText("🔌 Disconnect Arduino")
-            QMessageBox.information(self, "Success", f"Connected to Arduino on {port}")
-        except Exception as e:
-            QMessageBox.critical(self, "Erreur Arduino", f"Connexion à l'Arduino impossible sur {port} : {str(e)}")
+            QMessageBox.information(self, "Success", f"Connected to Arduino on {self.port_combo.currentText()}")
+        else:
+            QMessageBox.warning(self, "Error", "No port selected!")
 
     def closeEvent(self, event):
         """Clean up resources when closing"""
@@ -489,6 +493,71 @@ class DrowsinessDetector(QMainWindow):
         # Vérifier si la caméra s'ouvre
         if not self.cap.isOpened():
             QMessageBox.critical(self, "Erreur caméra", f"Impossible d'ouvrir la caméra {new_index}. Branchez-la ou essayez un autre port.")
+
+    def detect_head_pose(self, frame, face_landmarks):
+        """Détecte l'orientation de la tête (pitch/yaw/roll) et déclenche une alerte si besoin"""
+        ih, iw, _ = frame.shape
+        # Points clés pour l'estimation (nez, menton, yeux, bouche)
+        image_points = np.array([
+            (int(face_landmarks.landmark[1].x * iw), int(face_landmarks.landmark[1].y * ih)),     # Nose tip
+            (int(face_landmarks.landmark[152].x * iw), int(face_landmarks.landmark[152].y * ih)), # Chin
+            (int(face_landmarks.landmark[263].x * iw), int(face_landmarks.landmark[263].y * ih)), # Right eye right corner
+            (int(face_landmarks.landmark[33].x * iw), int(face_landmarks.landmark[33].y * ih)),   # Left eye left corner
+            (int(face_landmarks.landmark[287].x * iw), int(face_landmarks.landmark[287].y * ih)), # Mouth right
+            (int(face_landmarks.landmark[57].x * iw), int(face_landmarks.landmark[57].y * ih)),   # Mouth left
+        ], dtype='double')
+        # Modèle 3D simplifié du visage
+        model_points = np.array([
+            (0.0, 0.0, 0.0),             # Nose tip
+            (0.0, -63.6, -12.5),         # Chin
+            (43.3, 32.7, -26.0),         # Right eye right corner
+            (-43.3, 32.7, -26.0),        # Left eye left corner
+            (28.9, -28.9, -24.1),        # Mouth right
+            (-28.9, -28.9, -24.1)        # Mouth left
+        ])
+        # Camera internals
+        focal_length = iw
+        center = (iw / 2, ih / 2)
+        camera_matrix = np.array(
+            [[focal_length, 0, center[0]],
+             [0, focal_length, center[1]],
+             [0, 0, 1]], dtype='double')
+        dist_coeffs = np.zeros((4, 1))
+        # Résolution PnP
+        success, rotation_vector, translation_vector = cv2.solvePnP(
+            model_points, image_points, camera_matrix, dist_coeffs, flags=cv2.SOLVEPNP_ITERATIVE)
+        if not success:
+            return
+        # Conversion en angles d'Euler
+        rmat, _ = cv2.Rodrigues(rotation_vector)
+        sy = np.sqrt(rmat[0, 0] * rmat[0, 0] + rmat[1, 0] * rmat[1, 0])
+        singular = sy < 1e-6
+        if not singular:
+            x = np.arctan2(rmat[2, 1], rmat[2, 2])
+            y = np.arctan2(-rmat[2, 0], sy)
+            z = np.arctan2(rmat[1, 0], rmat[0, 0])
+        else:
+            x = np.arctan2(-rmat[1, 2], rmat[1, 1])
+            y = np.arctan2(-rmat[2, 0], sy)
+            z = 0
+        pitch = np.degrees(x)
+        yaw = np.degrees(y)
+        roll = np.degrees(z)
+        # Affichage sur la frame
+        cv2.putText(frame, f"Pitch: {pitch:.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,0), 2)
+        cv2.putText(frame, f"Yaw: {yaw:.1f}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,0), 2)
+        cv2.putText(frame, f"Roll: {roll:.1f}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,0), 2)
+        # Détection d'une position anormale
+        if abs(pitch) > self.head_pose_limit or abs(yaw) > self.head_pose_limit:
+            if not self.head_pose_alert:
+                self.last_head_pose_time = time.time()
+                self.head_pose_alert = True
+            elif time.time() - self.last_head_pose_time > self.head_pose_threshold:
+                # Alerte : tête penchée trop longtemps
+                cv2.putText(frame, "ALERTE: TETE PENCHEE!", (200, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0,0,255), 3)
+                self.play_alert_sound()
+        else:
+            self.head_pose_alert = False
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

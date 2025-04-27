@@ -89,3 +89,19 @@ Pour toute question ou suggestion : ZouhairSA sur GitHub
 ## 📝 Licence
 Ce projet est open-source sous licence MIT.
 
+---
+
+## 🆕 [v1.1] Détection de l'orientation de la tête (Head Pose Estimation)
+
+- **NOUVEAU** : Le système détecte maintenant l'orientation de la tête (pitch, yaw, roll) grâce à MediaPipe et OpenCV.
+- Si la tête penche trop vers le bas, le haut, la gauche ou la droite pendant plus de 2 secondes, une alerte visuelle s'affiche et le buzzer Arduino sonne.
+- Les angles de la tête sont affichés en temps réel sur la vidéo (Pitch, Yaw, Roll).
+- **Utilisation** :
+  - Lancez l'application comme d'habitude.
+  - Penchez la tête vers le bas, le haut, la gauche ou la droite et maintenez la position >2s pour déclencher l'alerte.
+- **Paramètres ajustables** :
+  - Seuil d'angle (par défaut 20°)
+  - Durée avant alerte (par défaut 2 secondes)
+
+---
+
